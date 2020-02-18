@@ -1,33 +1,43 @@
 package com.bastrich
 
-import java.util.concurrent.ForkJoinPool
-
-import com.bastrich.entities.{HomePageRequest, NotValidRequest, RedirectRequest, Request, ShortenUrlRequest}
+import cats.MonadError
+import com.bastrich.entities._
+import com.bastrich.storage.Storage
 import io.vertx.core.Handler
 import io.vertx.core.http.{HttpMethod, HttpServerRequest, HttpServerResponse}
+import monix.eval.Task
+import monix.execution.Scheduler
 
-import scala.language.implicitConversions
+import cats.syntax.applicative._
+import cats.syntax.applicativeError._
+import cats.syntax.flatMap._
+import cats.syntax.functor._
+import cats.syntax.monadError._
 
-import scala.concurrent.{ExecutionContext, Future}
-
-class RequestHandler(val config: Config) extends Handler[HttpServerRequest] {
+class RequestHandler[F[_]](val config: Config, storage: Storage[F])(implicit monadError: MonadError[F, Throwable]) extends Handler[HttpServerRequest] {
   private val DefaultResponseText = s"send POST ${config.host}:${config.port}}/shorten?url=<taget_url>"
 
-  private implicit val executor: ExecutionContext = ExecutionContext.fromExecutor(new ForkJoinPool(config.parallelism))
-
-  private val storage = new Storage
+  private implicit val executor = Scheduler.fixedPool("asd", config.parallelism)
 
   override def handle(event: HttpServerRequest): Unit = {
     toRequest(event) match {
-      case ShortenUrlRequest(response, urlParam) =>
-        (
-          for {
-            _ <- if (validUrl(urlParam)) Future.unit else Future.failed(new Exception("Not valid URL"))
-            shortUrl <- storage.put(urlParam)
-          } yield shortUrl
-          )
-          .map(shortUrl => response.end(s"http://${config.host}:${config.port}/$shortUrl"))
-          .recover { case exception => response.end(exception.getMessage) }
+      case ShortenUrlRequest(response, urlParam) => {
+
+        urlParam
+          .pure
+          .ensure(new Exception("Not valid URL")) {
+            !_.isEmpty
+          }
+          .flatMap { a => storage.put(a) }
+          .map { shortUrl =>
+            response.end(s"http://${config.host}:${config.port}/$shortUrl")
+          }
+          .recover { case exception => response.end(exception.getMessage) } match {
+          case task: Task[String] => task.runToFuture
+          case _ =>
+        }
+      }
+
 
       case HomePageRequest(response) => response.end(DefaultResponseText)
 
@@ -35,12 +45,21 @@ class RequestHandler(val config: Config) extends Handler[HttpServerRequest] {
         storage.get(path.tail)
           .map { shortUrl => redirect(response, shortUrl) }
           .recover { case exception => response.end(s"Error: ${exception.getMessage}") }
+        match {
+          case task: Task[String] => task.runToFuture
+          case _ =>
+        }
 
       case NotValidRequest(response) => response.end(DefaultResponseText)
     }
   }
 
-  def validUrl(url: String) = !url.isEmpty
+  def validUrlTry(url: String) =
+    if (url.isEmpty) new Exception("Not valid URL") else url
+
+  def validUrlTask(url: String): Task[String] =
+    if (url.isEmpty) Task.raiseError(new Exception("Not valid URL")) else Task(url)
+
 
   def redirect(response: HttpServerResponse, targetUrl: String): Unit =
     response

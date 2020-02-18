@@ -1,13 +1,14 @@
 package com.bastrich.utils
 
 import com.bastrich.RequestHandler
+import monix.eval.Task
 import org.scalatest.Matchers._
 import org.scalatest.matchers.Matcher
 
 import scala.util.Random
 
 object TestChain {
-  def testChain(steps: (Option[TestResponse] => (TestRequest, Matcher[TestResponse]))*)(implicit requestHandler: RequestHandler): TestChain = {
+  def testChain[F[_]](steps: (Option[TestResponse] => (TestRequest, Matcher[TestResponse]))*)(implicit requestHandler: RequestHandler[F]): TestChain[F] = {
     new TestChain(
       requestHandler,
       steps,
@@ -16,7 +17,7 @@ object TestChain {
   }
 }
 
-class TestChain(requestHandler: RequestHandler, chain: Seq[Option[TestResponse] => (TestRequest, Matcher[TestResponse])], periodMs: => Int) {
+class TestChain[F[_]](requestHandler: RequestHandler[F], chain: Seq[Option[TestResponse] => (TestRequest, Matcher[TestResponse])], periodMs: => Int) {
   def run() = {
     chain
       .foldLeft[Option[TestResponse]](None) { (previousTestResponse, step) =>

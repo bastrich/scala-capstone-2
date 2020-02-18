@@ -2,22 +2,26 @@ package com.bastrich
 
 import java.util.concurrent.ForkJoinPool
 
+import com.bastrich.storage.{ConcurrentAsyncStorage, SyncStorage}
 import com.bastrich.utils.TestChain.testChain
 import com.bastrich.utils.{Steps, TestChain}
+import monix.eval.Task
 import org.apache.commons.lang3.RandomStringUtils
 import org.scalatest.FunSpec
 
 import scala.collection.parallel.CollectionConverters._
 import scala.collection.parallel.ForkJoinTaskSupport
-import scala.util.Random
+import scala.util.{Random, Try}
 
 class Test extends FunSpec {
 
   private val config = Config("test_host", 111, 4)
-  private implicit val requestHandler: RequestHandler = new RequestHandler(config)
   private val steps = new Steps(config.host, config.port)
 
-  it("test logic in parallel") {
+  it("test async logic in parallel") {
+    implicit val monadErrorTask = new monix.eval.instances.CatsBaseForTask
+    implicit val requestHandler: RequestHandler[Task] = new RequestHandler(config, new ConcurrentAsyncStorage)
+
     val testChains = List
       .fill(30)(generateTestChain(42 + Random.nextInt(100) / 3))
       .par
@@ -28,7 +32,18 @@ class Test extends FunSpec {
       .foreach(_.run())
   }
 
-  private def generateTestChain(approximateLength: Int): TestChain = {
+  it("test sync logic ") {
+    import cats.instances.try_._
+    implicit val requestHandler: RequestHandler[Try] = new RequestHandler(config, new SyncStorage)
+
+    val testChains = List
+      .fill(30)(generateTestChain(42 + Random.nextInt(100) / 3))
+
+    testChains
+      .foreach(_.run())
+  }
+
+  private def generateTestChain[F[_]](approximateLength: Int)(implicit requestHandler: RequestHandler[F]): TestChain[F] = {
     import steps._
 
     testChain(
